@@ -1,0 +1,4 @@
+cryptography
+customtkinter
+python-ldap
+sqlcipher3
