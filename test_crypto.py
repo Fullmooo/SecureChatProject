@@ -1,5 +1,6 @@
 from common.crypto import CryptoEngine
 from Crypto.Random import get_random_bytes
+from common.protocol import SecureProtocol
 
 # 1. Préparation d'une clé AES en bytearray (pour pouvoir l'effacer après)
 cle_aes = bytearray(get_random_bytes(32)) 
@@ -18,3 +19,7 @@ except Exception as e:
 CryptoEngine.secure_wipe(cle_aes)
 if all(b == 0 for b in cle_aes):
     print("[OK] Zeroing Memory : La clé a été effacée de la RAM.")
+
+# Test du protocole
+paquet = SecureProtocol.prepare_message("Joyce", "CHAT", "Salut l'équipe !")
+print(f"[OK] Protocole : Message structuré : {paquet}")
