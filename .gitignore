@@ -32,3 +32,6 @@ env/
 .idea/
 *.suo
 *.user
+
+# Claude Code (outil de développement interne)
+.claude/
