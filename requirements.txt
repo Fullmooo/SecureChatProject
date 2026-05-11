@@ -1,5 +1,5 @@
-cryptography
 customtkinter
+cryptography
 ldap3
 sqlcipher3
-pycryptodome
+pycryptodome==3.23.0
