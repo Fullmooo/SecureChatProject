@@ -288,35 +288,3 @@ def wipe_key() -> None:
         # Puis libérer la référence
         _aes_key = None
     print("[DB] Clé AES zéroïsée et effacée de la RAM.")
-
-
-# ─────────────────────────────────────────────
-# TEST RAPIDE (à lancer directement : python db_manager.py)
-# ─────────────────────────────────────────────
-
-if __name__ == "__main__":
-    print("=== TEST db_manager.py ===\n")
-
-    # 1. Init avec un faux mot de passe LDAP et username
-    init_db("motdepasse_ldap_test", "alice")
-
-    # 2. Sauvegarder des messages
-    save_message("alice", "Salut l'équipe !")
-    save_message("bob",   "Bonjour Alice, tout va bien ?")
-    save_message("alice", "Oui, le chiffrement fonctionne 🔒")
-    print("[OK] 3 messages sauvegardés en base (chiffrés)")
-
-    # 3. Charger et afficher l'historique
-    historique = load_history()
-    print(f"\n[OK] Historique chargé ({len(historique)} messages) :\n")
-    for msg in historique:
-        print(f"  [{msg['timestamp']}] {msg['sender']} : {msg['content']}")
-
-    # 4. Sauvegarder un faux contact
-    save_contact("bob", "-----BEGIN CERTIFICATE-----\nFAKECERT\n-----END CERTIFICATE-----")
-    contact = get_contact("bob")
-    print(f"\n[OK] Contact récupéré : {contact['username']}")
-
-    # 5. Wipe de la clé
-    wipe_key()
-    print("\n=== TOUS LES TESTS PASSÉS ===")
