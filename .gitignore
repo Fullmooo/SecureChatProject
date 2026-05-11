@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Clés privées et secrets — NE JAMAIS COMMITTER
+*.key
+*_private_key.pem
+*.p12
+*.pfx
+
+# Certificats générés localement (le ca_cert.pem public peut être commis manuellement)
+server/certs/
+
+# Base de données locale
+storage/
+*.db
+*.sqlite
+
+# Environnements virtuels
+venv/
+.env/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Claude Code (outil de développement interne)
+.claude/
