@@ -1,4 +1,4 @@
 cryptography
 customtkinter
-python-ldap
+ldap3
 sqlcipher3
