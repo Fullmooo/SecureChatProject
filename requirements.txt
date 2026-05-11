@@ -2,4 +2,4 @@ cryptography
 customtkinter
 ldap3
 sqlcipher3
-sqlite3
+pycryptodome
