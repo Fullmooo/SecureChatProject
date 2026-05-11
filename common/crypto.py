@@ -1,60 +1,46 @@
+from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
-from Crypto.Cipher import AES
-from Crypto.Signature import pss
-from Crypto.Hash import SHA256
 from Crypto.Random import get_random_bytes
 
 class CryptoEngine:
-    """
-    Moteur de sécurité du projet SecureChat.
-    Gère le chiffrement, la signature et la sécurité de la RAM.
-    """
-
-    # --- PARTIE 1 : RSA (IDENTITÉ) ---
+    
     @staticmethod
-    def generate_rsa_keypair():
-        """Génère RSA-4096 pour l'Étape 0"""
+    def encrypt_aes_gcm(key, plaintext):
+        assert len(key) == 32, f"Clé AES invalide : {len(key)} octets"
+        cipher = AES.new(key, AES.MODE_GCM)
+        ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode('utf-8'))
+        return cipher.nonce + tag + ciphertext
+
+    @staticmethod
+    def decrypt_aes_gcm(key, encrypted_data):
+        assert len(key) == 32, f"Clé AES invalide : {len(key)} octets"
+        nonce = encrypted_data[:16]
+        tag = encrypted_data[16:32]
+        ciphertext = encrypted_data[32:]
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        return cipher.decrypt_and_verify(ciphertext, tag).decode('utf-8')
+
+    # --- C'EST CETTE PARTIE QUI MANQUE OU EST MAL NOMMÉE ---
+    @staticmethod
+    def generate_rsa_keys():
         key = RSA.generate(4096)
         return key.export_key(), key.publickey().export_key()
 
     @staticmethod
-    def sign_message(private_key_pem, message_bytes):
-        """Signe les données pour l'Étape 2"""
-        key = RSA.import_key(private_key_pem)
-        h = SHA256.new(message_bytes)
-        return pss.new(key).sign(h)
+    def encrypt_rsa(public_key_data, data):
+        recipient_key = RSA.import_key(public_key_data)
+        cipher_rsa = PKCS1_OAEP.new(recipient_key)
+        return cipher_rsa.encrypt(data)
 
     @staticmethod
-    def verify_signature(public_key_pem, message_bytes, signature):
-        """Vérifie l'origine (Étape 3)"""
-        key = RSA.import_key(public_key_pem)
-        h = SHA256.new(message_bytes)
-        verifier = pss.new(key)
-        try:
-            verifier.verify(h, signature)
-            return True
-        except (ValueError, TypeError):
-            return False
-
-    # --- PARTIE 2 : AES (CONFIDENTIALITÉ) ---
-    @staticmethod
-    def encrypt_aes_gcm(key, plaintext):
-        """Chiffre en AES-256 GCM"""
-        cipher = AES.new(key, AES.MODE_GCM)
-        ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode())
-        return cipher.nonce, ciphertext, tag
+    def decrypt_rsa(private_key_data, encrypted_data):
+        recipient_key = RSA.import_key(private_key_data)
+        cipher_rsa = PKCS1_OAEP.new(recipient_key)
+        return cipher_rsa.decrypt(encrypted_data)
 
     @staticmethod
-    def decrypt_aes_gcm(key, nonce, ciphertext, tag):
-        """Déchiffre et valide l'intégrité"""
-        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-        return plaintext.decode('utf-8')
-
-    # --- PARTIE 3 : ANTI-FORENSICS ---
-    @staticmethod
-    def secure_wipe(secret):
-        """Efface physiquement les données de la RAM (Zeroing)"""
-        if isinstance(secret, bytearray):
-            for i in range(len(secret)):
-                secret[i] = 0
+    def secure_wipe(var):
+        if isinstance(var, (bytearray, bytes)):
+            ba = bytearray(var)
+            for i in range(len(ba)):
+                ba[i] = 0
