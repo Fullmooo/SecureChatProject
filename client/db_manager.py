@@ -1,0 +1,272 @@
+"""
+Module 3.3 — Stockage local SQLite chiffré
+
+Rôle : Sauvegarder et charger les messages de manière chiffrée
+       dans une base SQLite locale (chat_history.db).
+       Les messages sont chiffrés avec AES-256 GCM avant d'être écrits.
+       La clé AES est dérivée du mot de passe LDAP via PBKDF2.
+"""
+
+import sqlite3
+import os
+import hashlib
+from datetime import datetime
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+
+# ─────────────────────────────────────────────
+# CHEMIN DE LA BASE DE DONNÉES
+# ─────────────────────────────────────────────
+DB_PATH = os.path.join(os.path.dirname(__file__), "chat_history.db")
+
+# Clé AES globale (stockée en RAM uniquement, jamais sur disque)
+_aes_key = None
+
+
+# ─────────────────────────────────────────────
+# FONCTIONS INTERNES (privées)
+# ─────────────────────────────────────────────
+
+def _derive_key(password: str) -> bytes:
+    """
+    Dérive une clé AES-256 depuis le mot de passe LDAP via PBKDF2.
+    Le sel est fixe et lié au projet (pas besoin de le stocker).
+    """
+    salt = b"SecureChatEFREI2025"  # sel fixe du projet
+    key = hashlib.pbkdf2_hmac(
+        hash_name="sha256",
+        password=password.encode("utf-8"),
+        salt=salt,
+        iterations=200_000,   # 200 000 itérations = résistant aux attaques brute force
+        dklen=32              # 32 octets = AES-256
+    )
+    return key
+
+
+def _encrypt(plaintext: str) -> tuple[bytes, bytes, bytes]:
+    """
+    Chiffre un texte avec AES-256 GCM.
+    Retourne (nonce, ciphertext, tag).
+    """
+    cipher = AES.new(_aes_key, AES.MODE_GCM)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode("utf-8"))
+    return cipher.nonce, ciphertext, tag
+
+
+def _decrypt(nonce: bytes, ciphertext: bytes, tag: bytes) -> str:
+    """
+    Déchiffre et vérifie l'intégrité avec AES-256 GCM.
+    Lève une exception si le message a été altéré.
+    """
+    cipher = AES.new(_aes_key, AES.MODE_GCM, nonce=nonce)
+    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+    return plaintext.decode("utf-8")
+
+
+def _get_connection() -> sqlite3.Connection:
+    """Ouvre et retourne une connexion à la base SQLite."""
+    return sqlite3.connect(DB_PATH)
+
+
+# ─────────────────────────────────────────────
+# FONCTIONS PUBLIQUES (interface du module)
+# ─────────────────────────────────────────────
+
+def init_db(password: str) -> None:
+    """
+    À appeler une seule fois au démarrage du client.
+
+    - Dérive la clé AES depuis le mot de passe LDAP
+    - Crée le fichier chat_history.db si il n'existe pas
+    - Crée les tables messages et contacts
+
+    Args:
+        password: le mot de passe LDAP de l'utilisateur
+    """
+    global _aes_key
+
+    # 1. Dériver la clé AES depuis le mot de passe
+    _aes_key = _derive_key(password)
+
+    # 2. Créer la base et les tables
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    # Table des messages
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender    TEXT    NOT NULL,
+            content   BLOB    NOT NULL,
+            nonce     BLOB    NOT NULL,
+            tag       BLOB    NOT NULL,
+            timestamp TEXT    NOT NULL
+        )
+    """)
+
+    # Table des contacts (cache des certificats X.509)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS contacts (
+            username TEXT PRIMARY KEY,
+            cert_pem TEXT NOT NULL
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+    print("[DB] Base de données initialisée.")
+
+
+def save_message(sender: str, content: str, timestamp: str = None) -> None:
+    """
+    Chiffre et sauvegarde un message en base.
+    Appelée par le thread GUI à chaque message reçu ou envoyé.
+
+    Args:
+        sender:    nom de l'expéditeur (ex: "alice")
+        content:   texte du message en clair
+        timestamp: horodatage ISO (optionnel, généré automatiquement si absent)
+    """
+    if _aes_key is None:
+        raise RuntimeError("init_db() doit être appelée avant save_message()")
+
+    if timestamp is None:
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+    # Chiffrer le contenu avant d'écrire en base
+    nonce, ciphertext, tag = _encrypt(content)
+
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO messages (sender, content, nonce, tag, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (sender, ciphertext, nonce, tag, timestamp)
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_history() -> list[dict]:
+    """
+    Charge et déchiffre tous les messages depuis la base.
+    Appelée par l'UI au démarrage pour afficher l'historique.
+
+    Returns:
+        Liste de dicts : [{"sender": "alice", "content": "Salut", "timestamp": "..."}, ...]
+        Ordonnée du plus ancien au plus récent.
+    """
+    if _aes_key is None:
+        raise RuntimeError("init_db() doit être appelée avant load_history()")
+
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT sender, content, nonce, tag, timestamp FROM messages ORDER BY id ASC")
+    rows = cursor.fetchall()
+    conn.close()
+
+    messages = []
+    for sender, ciphertext, nonce, tag, timestamp in rows:
+        try:
+            content = _decrypt(bytes(nonce), bytes(ciphertext), bytes(tag))
+            messages.append({
+                "sender":    sender,
+                "content":   content,
+                "timestamp": timestamp
+            })
+        except Exception:
+            # Message corrompu ou clé incorrecte — on l'ignore proprement
+            messages.append({
+                "sender":    sender,
+                "content":   "[Message illisible]",
+                "timestamp": timestamp
+            })
+
+    return messages
+
+
+def save_contact(username: str, cert_pem: str) -> None:
+    """
+    Sauvegarde ou met à jour le certificat X.509 d'un contact en cache local.
+    Utilisé pour vérifier les signatures sans redemander au serveur.
+
+    Args:
+        username: nom de l'utilisateur (ex: "bob")
+        cert_pem: certificat X.509 au format PEM (string)
+    """
+    conn = _get_connection()
+    cursor = conn.cursor()
+    # INSERT OR REPLACE = mise à jour si le contact existe déjà
+    cursor.execute(
+        "INSERT OR REPLACE INTO contacts (username, cert_pem) VALUES (?, ?)",
+        (username, cert_pem)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_contact(username: str) -> dict | None:
+    """
+    Récupère un contact depuis le cache local.
+
+    Args:
+        username: nom de l'utilisateur à chercher
+
+    Returns:
+        Dict {"username": ..., "cert_pem": ...} ou None si introuvable
+    """
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, cert_pem FROM contacts WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+
+    return {"username": row[0], "cert_pem": row[1]}
+
+
+def wipe_key() -> None:
+    """
+    Efface la clé AES de la RAM lors de la fermeture de l'application.
+    À appeler dans la routine de cleanup (Phase 4.1 / fermeture fenêtre).
+    """
+    global _aes_key
+    if _aes_key is not None:
+        # Écraser les octets avant de libérer la référence
+        _aes_key = b"\x00" * 32
+        _aes_key = None
+    print("[DB] Clé AES effacée de la RAM.")
+
+
+# ─────────────────────────────────────────────
+# TEST RAPIDE (à lancer directement : python db_manager.py)
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print("=== TEST db_manager.py ===\n")
+
+    # 1. Init avec un faux mot de passe LDAP
+    init_db("motdepasse_ldap_test")
+
+    # 2. Sauvegarder des messages
+    save_message("alice", "Salut l'équipe !")
+    save_message("bob",   "Bonjour Alice, tout va bien ?")
+    save_message("alice", "Oui, le chiffrement fonctionne 🔒")
+    print("[OK] 3 messages sauvegardés en base (chiffrés)")
+
+    # 3. Charger et afficher l'historique
+    historique = load_history()
+    print(f"\n[OK] Historique chargé ({len(historique)} messages) :\n")
+    for msg in historique:
+        print(f"  [{msg['timestamp']}] {msg['sender']} : {msg['content']}")
+
+    # 4. Sauvegarder un faux contact
+    save_contact("bob", "-----BEGIN CERTIFICATE-----\nFAKECERT\n-----END CERTIFICATE-----")
+    contact = get_contact("bob")
+    print(f"\n[OK] Contact récupéré : {contact['username']}")
+
+    # 5. Wipe de la clé
+    wipe_key()
+    print("\n=== TOUS LES TESTS PASSÉS ===")
