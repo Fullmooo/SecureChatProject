@@ -10,11 +10,11 @@ class SecureProtocol:
     
     # --- CONSTANTES DE TYPES DE MESSAGE ---
     # Centraliser ici permet d'éviter les erreurs de frappe dans le reste du projet
-    TYPE_CHAT = "CHAT_MSG"
     TYPE_AUTH = "AUTH_REQ"
-    TYPE_KEY_EXCHANGE = "KEY_EXCHANGE"
-    TYPE_SYSTEM = "SYS_INFO"
-
+    TYPE_CSR = "CSR_SEND"       # Pour la demande de certificat
+    TYPE_CHAT = "CHAT_MSG"
+    TYPE_ROTATION = "KEY_ROTATION" # Pour le changement de clé AES
+    
     @staticmethod
     def prepare_message(sender, message_type, data, signature=None):
         """

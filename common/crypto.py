@@ -59,14 +59,19 @@ class CryptoEngine:
             return False
 
     # --- SÉCURITÉ ---
+    # --- SÉCURITÉ ---
     @staticmethod
     def generate_rsa_keys():
+        """Génère un couple de clés RSA 4096 bits"""
         key = RSA.generate(4096)
         return key.export_key(), key.publickey().export_key()
 
     @staticmethod
     def secure_wipe(var):
-        if isinstance(var, (bytearray, bytes)):
-            ba = bytearray(var)
-            for i in range(len(ba)):
-                ba[i] = 0
+        """Efface VRAIMENT la mémoire de l'objet original"""
+        if isinstance(var, bytearray):
+            # Le [:] est magique : il modifie le contenu de l'original en RAM
+            var[:] = b'\x00' * len(var)
+        elif isinstance(var, list):
+            for i in range(len(var)):
+                var[i] = 0

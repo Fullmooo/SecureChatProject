@@ -1,1 +1,5 @@
 pycryptodome==3.23.0
+customtkinter
+cryptography
+ldap3
+sqlcipher3
