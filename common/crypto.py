@@ -21,7 +21,12 @@ class CryptoEngine:
         cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
         return cipher.decrypt_and_verify(ciphertext, tag).decode('utf-8')
 
-    # --- RSA OAEP (Transport de clé) ---
+    # --- C'EST CETTE PARTIE QUI MANQUE OU EST MAL NOMMÉE ---
+    @staticmethod
+    def generate_rsa_keys():
+        key = RSA.generate(4096)
+        return key.export_key(), key.publickey().export_key()
+
     @staticmethod
     def encrypt_rsa(public_key_data, data):
         recipient_key = RSA.import_key(public_key_data)
@@ -61,6 +66,7 @@ class CryptoEngine:
 
     @staticmethod
     def secure_wipe(var):
-        """Efface VRAIMENT la mémoire en place"""
-        if isinstance(var, bytearray):
-            var[:] = b'\x00' * len(var) # Modifie l'original, pas une copie
+        if isinstance(var, (bytearray, bytes)):
+            ba = bytearray(var)
+            for i in range(len(ba)):
+                ba[i] = 0
