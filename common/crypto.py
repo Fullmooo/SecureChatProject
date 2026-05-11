@@ -21,12 +21,7 @@ class CryptoEngine:
         cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
         return cipher.decrypt_and_verify(ciphertext, tag).decode('utf-8')
 
-    # --- C'EST CETTE PARTIE QUI MANQUE OU EST MAL NOMMÉE ---
-    @staticmethod
-    def generate_rsa_keys():
-        key = RSA.generate(4096)
-        return key.export_key(), key.publickey().export_key()
-
+    # --- RSA OAEP (Chiffrement de clé) ---
     @staticmethod
     def encrypt_rsa(public_key_data, data):
         recipient_key = RSA.import_key(public_key_data)
@@ -39,7 +34,7 @@ class CryptoEngine:
         cipher_rsa = PKCS1_OAEP.new(recipient_key)
         return cipher_rsa.decrypt(encrypted_data)
 
-    # --- RSA PSS (Signature - LE RETOUR) ---
+    # --- RSA PSS (Signature) ---
     @staticmethod
     def sign_message(private_key_data, message):
         key = RSA.import_key(private_key_data)
@@ -58,11 +53,10 @@ class CryptoEngine:
         except (ValueError, TypeError):
             return False
 
-    # --- SÉCURITÉ ---
-    # --- SÉCURITÉ ---
+    # --- UTILITAIRES & SÉCURITÉ ---
     @staticmethod
     def generate_rsa_keys():
-        """Génère un couple de clés RSA 4096 bits"""
+        """Génère un couple de clés RSA 4096 bits (Une seule fois !)"""
         key = RSA.generate(4096)
         return key.export_key(), key.publickey().export_key()
 
@@ -70,7 +64,7 @@ class CryptoEngine:
     def secure_wipe(var):
         """Efface VRAIMENT la mémoire de l'objet original"""
         if isinstance(var, bytearray):
-            # Le [:] est magique : il modifie le contenu de l'original en RAM
+            # Le [:] modifie le contenu de l'original en RAM
             var[:] = b'\x00' * len(var)
         elif isinstance(var, list):
             for i in range(len(var)):
