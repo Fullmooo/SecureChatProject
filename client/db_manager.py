@@ -14,20 +14,31 @@ from datetime import datetime
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 
+# ─────────────────────────────────────────────
 # CHEMIN DE LA BASE DE DONNÉES
-DB_PATH = os.path.join(os.path.dirname(__file__), "chat_history.db")
+# ─────────────────────────────────────────────
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "storage", "chat_history.db")
 
 # Clé AES globale (stockée en RAM uniquement, jamais sur disque)
 _aes_key = None
 
-# FONCTIONS INTERNES (privées)
 
-def _derive_key(password: str) -> bytes:
+# ─────────────────────────────────────────────
+# FONCTIONS INTERNES (privées)
+# ─────────────────────────────────────────────
+
+def _derive_key(password: str, salt: bytes) -> bytearray:
     """
     Dérive une clé AES-256 depuis le mot de passe LDAP via PBKDF2.
-    Le sel est fixe et lié au projet (pas besoin de le stocker).
+    Le sel doit être fourni (généré aléatoirement et stocké en base).
+    
+    Args:
+        password: mot de passe LDAP
+        salt: sel aléatoire stocké (16 octets)
+    
+    Returns:
+        Clé de 32 octets en tant que bytearray (mutable, pour pouvoir zéroïser)
     """
-    salt = b"SecureChatEFREI2025"  # sel fixe du projet
     key = hashlib.pbkdf2_hmac(
         hash_name="sha256",
         password=password.encode("utf-8"),
@@ -35,7 +46,35 @@ def _derive_key(password: str) -> bytes:
         iterations=200_000,   # 200 000 itérations = résistant aux attaques brute force
         dklen=32              # 32 octets = AES-256
     )
-    return key
+    # Retourner en bytearray pour pouvoir zéroïser la mémoire plus tard
+    return bytearray(key)
+
+
+def _get_or_create_salt(conn: sqlite3.Connection) -> bytes:
+    """
+    Récupère le sel stocké de la base, ou en génère un nouveau et le stocke.
+    Cela garantit un sel unique et aléatoire par base de données (= par utilisateur).
+    
+    Returns:
+        Sel de 16 octets (stocké en base)
+    """
+    cursor = conn.cursor()
+    
+    # Chercher le sel existant
+    cursor.execute("SELECT salt FROM config WHERE id = 1")
+    row = cursor.fetchone()
+    
+    if row:
+        return row[0]
+    
+    # Sinon, générer un nouveau sel aléatoire
+    salt = get_random_bytes(16)
+    cursor.execute(
+        "INSERT INTO config (id, salt) VALUES (1, ?)",
+        (salt,)
+    )
+    conn.commit()
+    return salt
 
 
 def _encrypt(plaintext: str) -> tuple[bytes, bytes, bytes]:
@@ -62,27 +101,37 @@ def _get_connection() -> sqlite3.Connection:
     """Ouvre et retourne une connexion à la base SQLite."""
     return sqlite3.connect(DB_PATH)
 
-# FONCTIONS PUBLIQUES (interface du module)
 
-def init_db(password: str) -> None:
+# ─────────────────────────────────────────────
+# FONCTIONS PUBLIQUES (interface du module)
+# ─────────────────────────────────────────────
+
+def init_db(password: str, username: str) -> None:
     """
     À appeler une seule fois au démarrage du client.
 
-    - Dérive la clé AES depuis le mot de passe LDAP
-    - Crée le fichier chat_history.db si il n'existe pas
+    - Crée la base SQLite si elle n'existe pas
+    - Génère un sel aléatoire unique et le stocke en base
+    - Dérive la clé AES depuis le mot de passe LDAP et ce sel
     - Crée les tables messages et contacts
 
     Args:
         password: le mot de passe LDAP de l'utilisateur
+        username: identifiant de l'utilisateur
     """
     global _aes_key
 
-    # 1. Dériver la clé AES depuis le mot de passe
-    _aes_key = _derive_key(password)
-
-    # 2. Créer la base et les tables
+    # 1. Ouvrir/créer la base
     conn = _get_connection()
     cursor = conn.cursor()
+
+    # 2. Créer la table de configuration (stocke le sel aléatoire)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS config (
+            id   INTEGER PRIMARY KEY,
+            salt BLOB NOT NULL
+        )
+    """)
 
     # Table des messages
     cursor.execute("""
@@ -103,6 +152,12 @@ def init_db(password: str) -> None:
             cert_pem TEXT NOT NULL
         )
     """)
+
+    # 3. Obtenir ou créer le sel aléatoire unique
+    salt = _get_or_create_salt(conn)
+
+    # 4. Dériver la clé AES depuis le mot de passe + sel aléatoire
+    _aes_key = _derive_key(password, salt)
 
     conn.commit()
     conn.close()
@@ -221,12 +276,15 @@ def get_contact(username: str) -> dict | None:
 
 def wipe_key() -> None:
     """
-    Efface la clé AES de la RAM lors de la fermeture de l'application.
+    Efface complètement la clé AES de la RAM lors de la fermeture de l'application.
+    Zéroïse chaque octet du bytearray (mutable) avant de libérer la référence.
     À appeler dans la routine de cleanup (Phase 4.1 / fermeture fenêtre).
     """
     global _aes_key
     if _aes_key is not None:
-        # Écraser les octets avant de libérer la référence
-        _aes_key = b"\x00" * 32
+        # Zéroïser chaque octet individuellement (bytearray est mutable)
+        for i in range(len(_aes_key)):
+            _aes_key[i] = 0
+        # Puis libérer la référence
         _aes_key = None
-    print("[DB] Clé AES effacée de la RAM.")
+    print("[DB] Clé AES zéroïsée et effacée de la RAM.")
