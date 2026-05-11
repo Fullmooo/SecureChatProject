@@ -20,7 +20,6 @@ class CryptoEngine:
         cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
         return cipher.decrypt_and_verify(ciphertext, tag).decode('utf-8')
 
-    # --- C'EST CETTE PARTIE QUI MANQUE OU EST MAL NOMMÉE ---
     @staticmethod
     def generate_rsa_keys():
         key = RSA.generate(4096)
