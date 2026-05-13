@@ -16,7 +16,7 @@ import hashlib
 import base64
 from ldap3 import (
     Server, Connection, ALL,
-    SUBTREE, MODIFY_ADD,
+    SUBTREE, MODIFY_ADD, MODIFY_REPLACE,
     Tls, SIMPLE
 )
 from ldap3.core.exceptions import (
@@ -30,18 +30,26 @@ from ldap3.core.exceptions import (
 # ─────────────────────────────────────────────
 
 LDAP_HOST         = "127.0.0.1"
-LDAP_PORT         = 636
-LDAP_DOMAIN       = "efrei.fr"
-LDAP_BASE_DN      = "dc=efrei,dc=fr"
+LDAP_PORT         = 636                  # 636 = LDAPS (port standard sécurisé)
+LDAP_DOMAIN       = "chatsec.local"
+LDAP_BASE_DN      = "dc=chatsec,dc=local"
 LDAP_ADMIN_DN     = f"cn=admin,{LDAP_BASE_DN}"
-LDAP_ADMIN_PASS   = "adminpassword"
+LDAP_ADMIN_PASS   = "Pyproject@237"      # Correspond au Docker chatsec-ldap
 LDAP_USERS_OU     = f"ou=users,{LDAP_BASE_DN}"
 LDAP_GROUP_CN     = f"cn=securechat,ou=groups,{LDAP_BASE_DN}"
 LDAP_CERTS_DIR    = os.path.join(os.path.dirname(__file__), "certs")
 LDAP_CA_CERT_PATH = os.path.join(LDAP_CERTS_DIR, "ldap_ca_cert.pem")
 LDAP_CA_CERT_FALLBACK_PATH = os.path.join(LDAP_CERTS_DIR, "ca_cert.pem")
-LDAP_TLS_VALIDATE = False  # Désactivé pour tests avec mock
-USE_MOCK_LDAP     = True   # Utiliser un serveur LDAP mock pour tests 
+LDAP_TLS_VALIDATE = False
+USE_MOCK_LDAP     = False  # True = mock local, False = vrai serveur LDAP Docker
+
+# Utilisateurs mock — actifs quand USE_MOCK_LDAP = True
+_MOCK_USERS = {
+    "segolene": {"password": "mdp_segolene", "email": "segolene@chatsec.local", "displayname": "Ségolène"},
+    "joyce":    {"password": "mdp_joyce",    "email": "joyce@chatsec.local",    "displayname": "Joyce"},
+    "lauraine": {"password": "mdp_lauraine", "email": "lauraine@chatsec.local", "displayname": "Lauraine"},
+    "morelle":  {"password": "mdp_morelle",  "email": "morelle@chatsec.local",  "displayname": "Morelle"},
+}
 
 # ─────────────────────────────────────────────
 # LOGGING
@@ -211,54 +219,69 @@ def authenticate_user(username: str, password: str) -> dict:
         user_dn = f"cn={username},{LDAP_USERS_OU}"
 
         if USE_MOCK_LDAP:
-            # Mock simple pour tests : accepte "test" / "testpassword"
-            if username == "test" and password == "testpassword":
+            user = _MOCK_USERS.get(username)
+            if user and user["password"] == password:
                 return {
-                    "success": True,
-                    "dn": user_dn,
-                    "username": username,
-                    "email": "test@efrei.fr",
-                    "displayname": "Test User"
+                    "success":     True,
+                    "dn":          user_dn,
+                    "username":    username,
+                    "email":       user["email"],
+                    "displayname": user["displayname"]
                 }
-            else:
-                return {"success": False, "error": "Utilisateur ou mot de passe incorrect"}
+            return {"success": False, "error": "Utilisateur ou mot de passe incorrect"}
 
         tls = _get_ldap_tls()
         server = Server(LDAP_HOST, port=LDAP_PORT, use_ssl=True, tls=tls, get_info=ALL)
 
-        conn = Connection(
+        # Étape 1 : admin cherche l'utilisateur (search and bind pattern)
+        admin_conn = Connection(
             server,
-            user=user_dn,
-            password=password,
+            user=LDAP_ADMIN_DN,
+            password=LDAP_ADMIN_PASS,
             authentication=SIMPLE,
             auto_bind=True
         )
 
-        conn.search(
+        admin_conn.search(
             search_base=LDAP_USERS_OU,
             search_filter=f"(cn={username})",
             search_scope=SUBTREE,
             attributes=["cn", "mail", "displayName"]
         )
 
-        if not conn.entries:
-            conn.unbind()
+        if not admin_conn.entries:
+            admin_conn.unbind()
             return {"success": False, "error": "Utilisateur introuvable"}
 
-        entry = conn.entries[0]
+        entry     = admin_conn.entries[0]
+        found_dn  = str(entry.entry_dn)
 
-        # Vérifier l'appartenance au groupe securechat via le groupe lui-même
-        if not _is_user_in_group(conn, str(entry.entry_dn)):
-            conn.unbind()
+        # Étape 2 : vérifier appartenance au groupe
+        if not _is_user_in_group(admin_conn, found_dn):
+            admin_conn.unbind()
             logger.warning(f"Accès refusé pour {username} — pas dans le groupe securechat")
             return {"success": False, "error": "Accès non autorisé au groupe SecureChat"}
 
-        conn.unbind()
+        admin_conn.unbind()
+
+        # Étape 3 : vérifier le mot de passe via bind utilisateur
+        user_conn = Connection(
+            server,
+            user=found_dn,
+            password=password,
+            authentication=SIMPLE,
+            auto_bind=False
+        )
+
+        if not user_conn.bind():
+            return {"success": False, "error": "Mot de passe incorrect"}
+
+        user_conn.unbind()
         logger.info(f"Authentification réussie : {username}")
 
         return {
             "success":     True,
-            "dn":          str(entry.entry_dn),
+            "dn":          found_dn,
             "username":    username,
             "email":       str(entry.mail) if entry.mail else "",
             "displayname": str(entry.displayName) if entry.displayName else username
@@ -389,6 +412,14 @@ def list_users() -> list[dict]:
     Returns:
         Liste de dicts [{"username": "alice", "email": "...", "displayname": "..."}, ...]
     """
+    if USE_MOCK_LDAP:
+        users = [
+            {"username": u, "email": d["email"], "displayname": d["displayname"]}
+            for u, d in _MOCK_USERS.items()
+        ]
+        logger.info(f"{len(users)} utilisateur(s) mock trouvé(s)")
+        return users
+
     try:
         conn = _get_admin_connection()
 
