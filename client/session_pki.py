@@ -1,8 +1,6 @@
-# ============================================================
 # session_pki.py - Enrolement PKI cote client
 # Auteur : Lauraine
 # Tache  : 3.1
-# ============================================================
 
 import os
 import sys
@@ -190,7 +188,7 @@ def enroler_client(username, connexion_serveur=None):
     return cle_privee, certificat
 
 
-# LANCEMENT DIRECT POUR TEST
+# LANCEMENT POUR TEST
 
 if __name__ == "__main__":
     cle, cert = enroler_client("lauraine")
