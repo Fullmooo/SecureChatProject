@@ -17,6 +17,9 @@ build/
 # Certificats générés localement (le ca_cert.pem public peut être commis manuellement)
 server/certs/
 
+# Certificats générés localement côté client
+client/certs/
+
 # Base de données locale
 storage/
 *.db
