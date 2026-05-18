@@ -50,7 +50,7 @@ class SecureChatApp(ctk.CTk):
         # Stockage des identifiants et clés pour la session et la reconnexion
         self.current_user = None
         self.current_pwd = None
-        self.client_private_key = None  # Évite la régénération en boucle de clés RSA
+        self.client_private_key = None  # Stocke uniquement l'objet clé RSA
 
         # Initialisation de la GUI
         self._show_login()
@@ -150,23 +150,25 @@ class SecureChatApp(ctk.CTk):
     def _send_auth_request(self, user: str, password: str) -> bool:
         """ Construit et envoie le paquet AUTH_REQ selon le format attendu (b64, clé persistée, framing). """
         try:
-            # Réutilisation de la clé privée pour éviter de casser l'enrôlement lors d'une reconnexion
+            # 1. Gestion stricte et réutilisation de la clé privée
             if self.client_private_key is not None:
                 print("[PKI] Réutilisation de la clé privée déjà instanciée en mémoire.")
             elif charger_credentials is not None:
-                self.client_private_key = charger_credentials(user)
-                if self.client_private_key:
+                # CORRECTION : Appel sans argument et déstructuration propre du tuple (cle, cert)
+                cle, cert = charger_credentials()
+                if cle:
+                    self.client_private_key = cle
                     print("[PKI] Clé privée existante rechargée avec succès via le module de Lauraine.")
             
-            # Si aucune clé n'existe (première connexion globale), on la génère
+            # Si aucune clé n'existe nulle part (première connexion), on la génère
             if self.client_private_key is None:
                 print("[PKI] Aucune clé disponible. Génération d'un nouveau couple de clés RSA...")
                 self.client_private_key = generer_cle_privee()
             
-            # Génération du CSR à partir de la clé validée
+            # 2. Génération du CSR à partir de la clé validée
             csr_pem = creer_csr(user, self.client_private_key)
             
-            # Formatage du payload interne
+            # 3. Formatage du payload interne
             inner_payload = json.dumps({
                 "password": password,
                 "csr_pem": csr_pem.decode('utf-8')
@@ -179,7 +181,7 @@ class SecureChatApp(ctk.CTk):
                 "payload": base64.b64encode(inner_payload.encode('utf-8')).decode('utf-8')
             }
             
-            # Sérialisation et envoi
+            # 4. Sérialisation et envoi
             serialized_data = json.dumps(auth_payload).encode('utf-8')
             self.send_data(serialized_data)
             
@@ -220,17 +222,12 @@ class SecureChatApp(ctk.CTk):
                 try:
                     payload = json.loads(data.decode('utf-8'))
                     print(f"[GUI] Données prêtes extraites de la queue : {payload}")
-                    
-                    # TODO Ségolène/Lauraine : Intercepter ici le retour de AUTH_SUCCESS / AUTH_FAIL 
-                    # pour basculer la frame de chat ou stocker le certificat X.509 signé renvoyé.
-                    
                 except json.JSONDecodeError:
                     print(f"[GUI] Erreur critique de parsing JSON sur la queue : {data}")
                 self.network_queue.task_done()
         except queue.Empty:
             pass
         
-        # Boucle itérative toutes les 100 ms via la boucle d'événements de CustomTkinter
         self.after(100, self._check_queue_loop)
 
     def _handle_disconnection_and_retry(self):
@@ -274,4 +271,5 @@ class SecureChatApp(ctk.CTk):
 if __name__ == "__main__":
     app = SecureChatApp()
     app.mainloop()
+
     
