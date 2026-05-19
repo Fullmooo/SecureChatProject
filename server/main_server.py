@@ -37,6 +37,7 @@ SERVER_PORT          = 5000
 CERTS_DIR            = os.path.join(os.path.dirname(__file__), "certs")
 KEY_ROTATION_HOURS   = 24
 LDAP_CHECK_SECONDS   = 30
+MAX_HISTORY          = 50   # Nombre max de messages conservés en RAM pour les clients hors-ligne
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,11 +70,13 @@ class ClientSession:
 class SecureChatServer:
 
     def __init__(self):
-        self.clients      : dict[str, ClientSession] = {}
-        self.clients_lock = threading.Lock()
-        self.group_key    = bytearray(os.urandom(32))  # AES-256 en RAM uniquement
-        self.key_lock     = threading.Lock()
-        self.stop_event   = threading.Event()
+        self.clients        : dict[str, ClientSession] = {}
+        self.clients_lock   = threading.Lock()
+        self.group_key      = bytearray(os.urandom(32))  # AES-256 en RAM uniquement
+        self.key_lock       = threading.Lock()
+        self.stop_event     = threading.Event()
+        self.message_history: list[dict] = []            # Buffer livraison hors-ligne
+        self.history_lock   = threading.Lock()
 
         self._load_pki()
         self._setup_tls()
@@ -146,12 +149,28 @@ class SecureChatServer:
         })
         logger.info(f"Clé AES envoyée à {session.username}")
 
+    def _send_history(self, session: ClientSession):
+        """Envoie les messages en attente à un client qui vient de se (re)connecter."""
+        with self.history_lock:
+            pending = list(self.message_history)
+        for msg in pending:
+            try:
+                self._send(session, msg)
+            except Exception as e:
+                logger.warning(f"Erreur envoi historique à {session.username}: {e}")
+        if pending:
+            logger.info(f"{len(pending)} message(s) manqué(s) envoyé(s) à {session.username}")
+
     def _rotate_group_key(self, reason: str = "rotation automatique"):
         """Génère une nouvelle clé AES et la redistribue à tous les clients."""
         logger.info(f"Rotation de clé — {reason}")
         with self.key_lock:
             CryptoEngine.secure_wipe(self.group_key)
             self.group_key = bytearray(os.urandom(32))
+        # Les anciens messages chiffrés avec l'ancienne clé ne peuvent plus être déchiffrés
+        with self.history_lock:
+            self.message_history.clear()
+        logger.info("Buffer historique vidé suite à la rotation de clé")
 
         with self.clients_lock:
             sessions = list(self.clients.values())
@@ -262,6 +281,8 @@ class SecureChatServer:
         # Envoi de la clé AES chiffrée en RSA
         if public_key_pem:
             self._send_group_key(session)
+            # Livraison des messages manqués (envoyés pendant que ce client était hors-ligne)
+            self._send_history(session)
 
         # Notifier tous les membres (y compris le nouveau) de la liste à jour
         self._broadcast_members()
@@ -313,6 +334,13 @@ class SecureChatServer:
 
                     # Broadcast (contenu AES chiffré — jamais déchiffré par le serveur)
                     self._broadcast(msg, exclude=session.username)
+
+                    # Mise en buffer pour livraison hors-ligne (message chiffré, serveur ne le lit pas)
+                    with self.history_lock:
+                        self.message_history.append(msg)
+                        if len(self.message_history) > MAX_HISTORY:
+                            self.message_history.pop(0)
+
                     logger.info(f"Message de {session.username} diffusé")
 
         except Exception as e:

@@ -239,9 +239,23 @@ class ChatFrame(ctk.CTkFrame):
             corner_radius=10
         ).pack(padx=12, pady=4)
 
-    def add_message(self, sender: str, message: str, is_me: bool = False):
-        # Date separator when the day changes
-        msg_date = date.today()
+    def add_message(self, sender: str, message: str, is_me: bool = False,
+                    stored_ts: str = None):
+        # Résolution de la date et de l'heure : timestamp DB (historique) ou heure courante (live)
+        if stored_ts:
+            try:
+                _dt = datetime.fromisoformat(stored_ts)
+                if _dt.tzinfo is not None:
+                    _dt = _dt.astimezone()       # UTC → heure locale
+                msg_date  = _dt.date()
+                _time_str = _dt.strftime("%H:%M")
+            except Exception:
+                msg_date  = date.today()
+                _time_str = datetime.now().strftime("%H:%M")
+        else:
+            msg_date  = date.today()
+            _time_str = datetime.now().strftime("%H:%M")
+
         if msg_date != self._last_msg_date:
             self._last_msg_date = msg_date
             self._add_date_separator(msg_date)
@@ -286,7 +300,7 @@ class ChatFrame(ctk.CTkFrame):
         ts_row = ctk.CTkFrame(bubble, fg_color="transparent")
         ts_row.pack(fill="x", padx=12, pady=(0, 8))
 
-        ts = datetime.now().strftime("%H:%M")
+        ts = _time_str
         if is_me:
             ctk.CTkLabel(
                 ts_row, text=f"✓✓  {ts}",
@@ -352,6 +366,6 @@ class ChatFrame(ctk.CTkFrame):
     def send_message(self):
         txt = self.entry.get().strip()
         if txt:
-            print(f"[ChatSec] Envoi : {txt}")
             self.add_message(self.username, txt, is_me=True)
             self.entry.delete(0, "end")
+            self.master.send_chat_message(txt)

@@ -165,5 +165,5 @@ class LoginFrame(ctk.CTkFrame):
             return
 
         self._set_loading(True)
-        from common.config import SERVER_HOST
-        self.on_login_callback(SERVER_HOST, user, pwd)
+        from common.config import SERVER_HOST, SERVER_PORT
+        self.on_login_callback(SERVER_HOST, SERVER_PORT, user, pwd)
