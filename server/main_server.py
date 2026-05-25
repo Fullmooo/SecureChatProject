@@ -17,6 +17,7 @@ import base64
 import socket
 import logging
 import threading
+from collections import deque
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -75,7 +76,7 @@ class SecureChatServer:
         self.group_key      = bytearray(os.urandom(32))  # AES-256 en RAM uniquement
         self.key_lock       = threading.Lock()
         self.stop_event     = threading.Event()
-        self.message_history: list[dict] = []            # Buffer livraison hors-ligne
+        self.message_history: deque = deque(maxlen=MAX_HISTORY)  # Buffer livraison hors-ligne (taille auto-limitée)
         self.history_lock   = threading.Lock()
 
         self._load_pki()
@@ -152,7 +153,8 @@ class SecureChatServer:
     def _send_history(self, session: ClientSession):
         """Envoie les messages en attente à un client qui vient de se (re)connecter."""
         with self.history_lock:
-            pending = list(self.message_history)
+            # On exclut les messages envoyés par ce client — il les a déjà dans sa DB locale
+            pending = [m for m in self.message_history if m.get("sender") != session.username]
         for msg in pending:
             try:
                 self._send(session, msg)
@@ -337,9 +339,7 @@ class SecureChatServer:
 
                     # Mise en buffer pour livraison hors-ligne (message chiffré, serveur ne le lit pas)
                     with self.history_lock:
-                        self.message_history.append(msg)
-                        if len(self.message_history) > MAX_HISTORY:
-                            self.message_history.pop(0)
+                        self.message_history.append(msg)  # deque(maxlen) gère la taille automatiquement
 
                     logger.info(f"Message de {session.username} diffusé")
 
@@ -365,6 +365,13 @@ class SecureChatServer:
             time.sleep(LDAP_CHECK_SECONDS)
             try:
                 ldap_members = {u["username"] for u in list_users()}
+
+                # Si LDAP est down ou vide, list_users() retourne [] → on ignore ce cycle
+                # pour éviter de déconnecter TOUS les utilisateurs (BLQ-01)
+                if not ldap_members:
+                    logger.warning("Surveillance LDAP : liste vide reçue — cycle ignoré (LDAP down?)")
+                    continue
+
                 with self.clients_lock:
                     connected = set(self.clients.keys())
 
