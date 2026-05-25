@@ -1,4 +1,4 @@
-# ChatSec — Messagerie Sécurisée d'Entreprise
+# ChatSec - Messagerie Sécurisée d'Entreprise
 
 Application de messagerie de groupe chiffrée, développée en Python dans le cadre de l'UE Professionnelle — Rattrapage 2026, Efrei Paris Panthéon-Assas.
 
