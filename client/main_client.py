@@ -2,7 +2,14 @@ import sys
 import os
 
 # --- CORRECTION ABSOLUE DES CHEMINS (Placé obligatoirement AVANT tout import local) ---
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if getattr(sys, 'frozen', False):
+    # Mode .exe PyInstaller : fichiers bundlés dans sys._MEIPASS (lecture seule),
+    # données persistantes (DB, clés) dans le dossier du .exe (écriture)
+    BUNDLE_DIR = sys._MEIPASS
+    BASE_DIR   = os.path.dirname(sys.executable)
+else:
+    BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    BUNDLE_DIR = BASE_DIR
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
@@ -14,6 +21,7 @@ import time
 import json
 import struct
 import base64
+from datetime import datetime, timezone
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -82,6 +90,8 @@ class SecureChatApp(ctk.CTk):
         self.client_private_key_pem = None  # Même clé sérialisée PEM (pour CryptoEngine PyCryptodome)
         self.group_key = None               # bytearray AES-256 reçu du serveur via KEY_ROTATION
         self.is_authenticated = False       # True uniquement après AUTH_OK — bloque la reconnexion auto si auth échoue
+        self._history_loaded = False        # Garde-fou : load_history() une seule fois par session (BLQ-05)
+        self._displayed_msgs: set = set()   # Déduplication : (sender, timestamp) déjà affichés
 
         # Initialisation de la GUI
         self._show_login()
@@ -128,6 +138,13 @@ class SecureChatApp(ctk.CTk):
                 self.chat_frame.pack(expand=True, fill="both")
             else:
                 print("[ERREUR] Échec de la construction ou de l'envoi du paquet AUTH_REQ.")
+                # Libération de la socket pour éviter la fuite de ressources (MAJ-03)
+                if self.secure_socket:
+                    try:
+                        self.secure_socket.close()
+                    except Exception:
+                        pass
+                self.is_connected = False
         else:
             return
 
@@ -140,7 +157,7 @@ class SecureChatApp(ctk.CTk):
             tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             tls_context.minimum_version = ssl.TLSVersion.TLSv1_3
 
-            ca_cert_path = os.path.join(BASE_DIR, "server", "certs", "ca_cert.pem")
+            ca_cert_path = os.path.join(BUNDLE_DIR, "server", "certs", "ca_cert.pem")
             tls_context.load_verify_locations(cafile=ca_cert_path)
             tls_context.verify_mode = ssl.CERT_REQUIRED
             tls_context.check_hostname = False
@@ -155,9 +172,16 @@ class SecureChatApp(ctk.CTk):
             # Options du CDC : Activation du TCP Keep-Alive
             raw_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
-            # Connexion et emballage sécurisé
-            self.secure_socket = tls_context.wrap_socket(raw_socket, server_hostname="chatsec.local")
+            # Timeout connexion : évite le freeze GUI si serveur injoignable (MAJ-07)
+            raw_socket.settimeout(10)
+
+            # Connexion et emballage sécurisé (server_hostname = IP réelle pour SNI cohérent)
+            self.secure_socket = tls_context.wrap_socket(raw_socket, server_hostname=host)
             self.secure_socket.connect((host, port))
+
+            # Retour en mode bloquant pour la boucle de réception (pas de faux timeouts)
+            self.secure_socket.settimeout(None)
+
             print("[+] Tunnel TLS 1.3 établi. Certificat serveur validé par la CA.")
             self.is_connected = True
 
@@ -303,8 +327,8 @@ class SecureChatApp(ctk.CTk):
                 except Exception as e:
                     print(f"[DB] Erreur init_db : {e}")
 
-            # Chargement de l'historique local dans l'UI
-            if load_history and hasattr(self, 'chat_frame'):
+            # Chargement de l'historique local dans l'UI — une seule fois par session (BLQ-05)
+            if load_history and hasattr(self, 'chat_frame') and not self._history_loaded:
                 try:
                     for msg in load_history():
                         is_me = msg["sender"] == self.current_user
@@ -312,6 +336,11 @@ class SecureChatApp(ctk.CTk):
                             msg["sender"], msg["content"],
                             is_me=is_me, stored_ts=msg.get("timestamp")
                         )
+                        # Marquer comme déjà affiché pour éviter les doublons du buffer serveur
+                        ts = msg.get("timestamp")
+                        if ts:
+                            self._displayed_msgs.add((msg["sender"], ts))
+                    self._history_loaded = True
                 except Exception as e:
                     print(f"[DB] Erreur load_history : {e}")
 
@@ -348,15 +377,24 @@ class SecureChatApp(ctk.CTk):
         elif msg_type == "CHAT_MSG":
             sender = payload.get("sender", "Inconnu")
             payload_b64 = payload.get("payload", "")
+            msg_ts = payload.get("timestamp")   # UTC ISO du serveur/expéditeur
             if payload_b64 and self.group_key:
                 try:
                     encrypted_bytes = base64.b64decode(payload_b64)
                     plaintext = CryptoEngine.decrypt_aes_gcm(bytearray(self.group_key), encrypted_bytes)
                     is_me = (sender == self.current_user)
+
+                    # Déduplication : ignorer les messages déjà affichés (live ou buffer serveur)
+                    dedup_key = (sender, msg_ts) if msg_ts else None
+                    if dedup_key and dedup_key in self._displayed_msgs:
+                        return  # Déjà affiché — on ignore silencieusement
+                    if dedup_key:
+                        self._displayed_msgs.add(dedup_key)
+
                     if hasattr(self, 'chat_frame'):
-                        self.chat_frame.add_message(sender, plaintext, is_me=is_me)
+                        self.chat_frame.add_message(sender, plaintext, is_me=is_me, stored_ts=msg_ts)
                     if save_message:
-                        save_message(sender, plaintext)
+                        save_message(sender, plaintext, timestamp=msg_ts)
                 except Exception as e:
                     print(f"[ERREUR CRYPTO] Déchiffrement message de {sender} impossible : {e}")
         else:
@@ -371,6 +409,7 @@ class SecureChatApp(ctk.CTk):
             print("[ERREUR] Clé privée non disponible — message non envoyé.")
             return
         try:
+            timestamp_utc = datetime.now(timezone.utc).isoformat()
             encrypted_bytes = CryptoEngine.encrypt_aes_gcm(bytearray(self.group_key), text)
             payload_b64 = base64.b64encode(encrypted_bytes).decode('utf-8')
 
@@ -381,12 +420,16 @@ class SecureChatApp(ctk.CTk):
                 "type":      "CHAT_MSG",
                 "sender":    self.current_user,
                 "payload":   payload_b64,
-                "signature": sig_b64
+                "signature": sig_b64,
+                "timestamp": timestamp_utc
             }
             self.send_data(json.dumps(msg).encode('utf-8'))
 
+            # Marquer ce message comme déjà affiché pour éviter tout doublon du buffer
+            self._displayed_msgs.add((self.current_user, timestamp_utc))
+
             if save_message:
-                save_message(self.current_user, text)
+                save_message(self.current_user, text, timestamp=timestamp_utc)
 
         except Exception as e:
             print(f"[ERREUR CRYPTO] Impossible de chiffrer/envoyer le message : {e}")

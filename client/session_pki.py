@@ -14,8 +14,13 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from common import config
 
 # CHEMINS DE STOCKAGE
+# En mode .exe (PyInstaller), on écrit à côté du .exe (écriture), pas dans sys._MEIPASS (lecture seule)
+if getattr(sys, 'frozen', False):
+    _CERTS_BASE = os.path.dirname(sys.executable)
+else:
+    _CERTS_BASE = os.path.dirname(__file__)
 
-CLIENT_CERTS_DIR = os.path.join(os.path.dirname(__file__), "certs")
+CLIENT_CERTS_DIR = os.path.join(_CERTS_BASE, "certs")
 CLIENT_KEY_PATH  = os.path.join(CLIENT_CERTS_DIR, "client_key.pem")
 CLIENT_CERT_PATH = os.path.join(CLIENT_CERTS_DIR, "client_cert.pem")
 CA_CERT_PATH     = os.path.join(CLIENT_CERTS_DIR, "ca_cert.pem")

@@ -7,7 +7,7 @@ import os
 
 # SERVEUR 
 # L'adresse IP du serveur (localhost = sur notre propre machine pour les tests)
-SERVER_HOST = "127.0.0.1"
+SERVER_HOST = "10.211.57.223"
 
 # Le port sur lequel le serveur écoute les connexions des clients
 SERVER_PORT = 5000
